@@ -1,0 +1,81 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    # .env points at compose hostnames; in CI both services run on loopback
+    env:
+      DATABASE_URL: 'mysql://root:root@127.0.0.1:3306/catalogue?serverVersion=11.4.12-MariaDB&charset=utf8mb4'
+      ELASTICSEARCH_DSN: http://localhost:9200
+
+    services:
+      # MapEntity asks the database even when the answer is 404
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: catalogue
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:9.1.0
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: 'false'
+          ES_JAVA_OPTS: '-Xms1g -Xmx1g'
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      # pinned to a commit, an action tag is mutable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.5'
+          extensions: ctype, iconv, pdo_mysql
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      # phpstan.neon reads the container from var/cache/dev
+      - name: Warm up the dev container
+        run: php bin/console cache:warmup --env=dev
+
+      - name: Coding standard
+        run: vendor/bin/phpcs
+
+      - name: Static analysis
+        run: vendor/bin/phpstan analyse --no-progress
+
+      - name: Rector
+        run: vendor/bin/rector process --dry-run --no-progress-bar
+
+      - name: Create the test database
+        run: |
+          php bin/console doctrine:database:create --env=test --if-not-exists
+          php bin/console doctrine:migrations:migrate --env=test --no-interaction
+
+      - name: Mapping against the migrations
+        run: php bin/console doctrine:schema:validate --env=test
+
+      - name: Tests
+        run: vendor/bin/phpunit
