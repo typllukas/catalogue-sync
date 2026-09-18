@@ -1,0 +1,12 @@
+framework:
+    secret: '%env(APP_SECRET)%'
+
+    session: false
+
+    exceptions:
+        App\Elasticsearch\Exception\SearchUnavailableException: { status_code: 503 }
+        App\Elasticsearch\Exception\ResultWindowExceededException: { status_code: 422, log_level: debug }
+
+when@test:
+    framework:
+        test: true

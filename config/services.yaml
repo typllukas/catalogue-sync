@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+parameters:
+    # empty everywhere but test, where the suite needs its own index to write into
+    elasticsearch_index_suffix: ''
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    App\:
+        resource: '../src/'
+        exclude:
+            - '../src/Entity/'
+
+    Elastic\Elasticsearch\Client:
+        factory: ['@App\Elasticsearch\Client\ElasticsearchClientFactory', 'create']
+
+when@test:
+    parameters:
+        elasticsearch_index_suffix: '_test'
