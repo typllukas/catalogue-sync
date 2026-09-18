@@ -1,9 +1,16 @@
+services:
+    - class: Architecture\Rules\StringDqlRule
+      tags: [phpstan.rules.rule]
+
 parameters:
     level: 10
     paths:
         - src
         - tests
         - tools
+    # the rule tests analyse these files themselves, and they break the rules on purpose
+    excludePaths:
+        - tools/Architecture/RuleSamples
     # PHP_CodeSniffer ships its own loader, so composer's autoloader cannot find the sniff interface
     scanDirectories:
         - vendor/squizlabs/php_codesniffer/src
