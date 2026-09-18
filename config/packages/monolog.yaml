@@ -1,0 +1,36 @@
+monolog:
+    channels:
+        - deprecation
+        - elasticsearch
+
+when@dev:
+    monolog:
+        handlers:
+            main:
+                type: stream
+                path: "%kernel.logs_dir%/%kernel.environment%.log"
+                level: debug
+                channels: ["!event", "!elasticsearch"]
+            elasticsearch:
+                type: stream
+                path: "%kernel.logs_dir%/elasticsearch.log"
+                level: info
+                channels: [elasticsearch]
+            console:
+                type: console
+                process_psr_3_messages: false
+                channels: ["!event", "!doctrine", "!console"]
+
+when@test:
+    monolog:
+        handlers:
+            main:
+                type: fingers_crossed
+                action_level: error
+                handler: nested
+                excluded_http_codes: [404, 405]
+                channels: ["!event"]
+            nested:
+                type: stream
+                path: "%kernel.logs_dir%/%kernel.environment%.log"
+                level: debug
