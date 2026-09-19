@@ -7,14 +7,21 @@ DC = docker compose
 EXEC = $(DC) exec -T --user $(HOST_UID):$(HOST_GID)
 PHP = $(EXEC) php
 CONSOLE = $(PHP) php bin/console
+# APP_DEBUG=0: Doctrine's debug middleware keeps every query, a million products run out of memory
+CONSOLE_BULK = $(EXEC) -e APP_DEBUG=0 php php bin/console
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs shell check schema-validate phpcs phpcs-fix phpstan rector rector-fix test-db test
+.PHONY: help setup up down logs shell check schema-validate phpcs phpcs-fix phpstan rector rector-fix test-db test migrate warm seed reindex reset es-indices
 
 help: ## List the available targets
 	@awk -F: '/^[a-z-]+:/ { desc = ""; if (match($$0, /## /)) desc = substr($$0, RSTART + 3); printf "  \033[36m%-16s\033[0m %s\n", $$1, desc }' $(MAKEFILE_LIST)
 
 ## --- containers ---
+
+setup: ## Fresh clone: containers, dependencies, schema, data, the index. Drops any data already there
+	@$(MAKE) --no-print-directory up
+	$(PHP) composer install --no-interaction
+	@$(MAKE) --no-print-directory reset
 
 up:
 	$(DC) up -d --wait
@@ -57,3 +64,31 @@ test-db: ## Create the test database and bring it up to date
 
 test: test-db
 	$(PHP) vendor/bin/phpunit
+
+## --- data and indices ---
+
+migrate: ## Run the migrations
+	$(CONSOLE) doctrine:migrations:migrate --no-interaction
+	$(CONSOLE) doctrine:schema:validate
+
+warm: ## Rebuild the compiled caches the bulk commands and PHPStan read
+    # without debug Symfony never rechecks the source, so a rename reaches the bulk commands only after this
+	@$(CONSOLE_BULK) cache:clear --quiet
+    # clearing takes the debug container with it, and phpstan.neon reads its xml
+	@$(CONSOLE) cache:warmup --quiet
+
+seed: warm ## Seed the catalogue and rebuild the index, needs an empty database
+	$(CONSOLE_BULK) catalogue-sync:dev:generate-data --products=$(or $(PRODUCTS),10000)
+	@$(MAKE) --no-print-directory reindex
+
+reindex: warm ## Rebuild the index and switch the alias
+	$(CONSOLE_BULK) catalogue-sync:index:reindex
+
+reset: ## Rebuild the schema and seed both stores, override like 'PRODUCTS=1000000 make reset'
+	$(CONSOLE) doctrine:schema:drop --force --full-database
+	@$(MAKE) --no-print-directory migrate
+	@$(MAKE) --no-print-directory seed
+
+es-indices: ## List the indices and aliases in Elasticsearch
+	@$(DC) exec -T elasticsearch curl -s 'localhost:9200/_cat/indices/products*?h=index,docs.count,store.size&v'
+	@$(DC) exec -T elasticsearch curl -s 'localhost:9200/_cat/aliases?h=alias,index' | grep -E '^products'
