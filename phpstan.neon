@@ -1,4 +1,10 @@
 services:
+    - class: Architecture\Rules\ProductWriteCallRule
+      tags: [phpstan.rules.rule]
+    - class: Architecture\Rules\ProductSyncOutboxDeleteRule
+      tags: [phpstan.rules.rule]
+    - class: Architecture\Rules\IndexWriteCallRule
+      tags: [phpstan.rules.rule]
     - class: Architecture\Rules\StringDqlRule
       tags: [phpstan.rules.rule]
 
