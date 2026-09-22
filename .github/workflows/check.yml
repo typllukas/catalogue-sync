@@ -63,16 +63,20 @@ jobs:
       - name: Coding standard
         run: vendor/bin/phpcs
 
+      - name: Indexed fields no query reads
+        run: php bin/console catalogue-sync:dev:check-mappings
+
       - name: Static analysis
         run: vendor/bin/phpstan analyse --no-progress
 
       - name: Rector
         run: vendor/bin/rector process --dry-run --no-progress-bar
 
-      - name: Create the test database
+      - name: Create the test database and load the fixtures
         run: |
           php bin/console doctrine:database:create --env=test --if-not-exists
           php bin/console doctrine:migrations:migrate --env=test --no-interaction
+          php bin/console doctrine:fixtures:load --env=test --no-interaction
 
       - name: Mapping against the migrations
         run: php bin/console doctrine:schema:validate --env=test
