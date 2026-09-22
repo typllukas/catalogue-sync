@@ -11,7 +11,7 @@ CONSOLE = $(PHP) php bin/console
 CONSOLE_BULK = $(EXEC) -e APP_DEBUG=0 php php bin/console
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up down logs shell check schema-validate phpcs phpcs-fix phpstan rector rector-fix test-db test migrate warm seed reindex reset es-indices
+.PHONY: help setup up down logs shell check schema-validate phpcs phpcs-fix check-mappings check-drift check-drift-all phpstan rector rector-fix test-db test migrate warm seed feed reindex reset es-indices
 
 help: ## List the available targets
 	@awk -F: '/^[a-z-]+:/ { desc = ""; if (match($$0, /## /)) desc = substr($$0, RSTART + 3); printf "  \033[36m%-16s\033[0m %s\n", $$1, desc }' $(MAKEFILE_LIST)
@@ -38,13 +38,16 @@ shell: ## Shell in the php container
 
 ## --- quality ---
 
-check: phpcs phpstan rector schema-validate test
+check: phpcs check-mappings phpstan rector schema-validate test
 
 phpcs:
 	$(PHP) vendor/bin/phpcs
 
 phpcs-fix:
 	$(PHP) vendor/bin/phpcbf
+
+check-mappings: ## Find indexed fields no query reads
+	$(CONSOLE) catalogue-sync:dev:check-mappings
 
 phpstan:
 	$(PHP) vendor/bin/phpstan analyse --no-progress --memory-limit=256M
@@ -58,9 +61,10 @@ rector-fix: ## Rector fix
 schema-validate: test-db
 	$(CONSOLE) doctrine:schema:validate --env=test
 
-test-db: ## Create the test database and bring it up to date
+test-db: ## Create the test database, bring it up to date and load the fixtures
 	$(CONSOLE) doctrine:database:create --env=test --if-not-exists
 	$(CONSOLE) doctrine:migrations:migrate --env=test --no-interaction
+	$(CONSOLE) doctrine:fixtures:load --env=test --no-interaction --quiet
 
 test: test-db
 	$(PHP) vendor/bin/phpunit
@@ -81,6 +85,9 @@ seed: warm ## Seed the catalogue and rebuild the index, needs an empty database
 	$(CONSOLE_BULK) catalogue-sync:dev:generate-data --products=$(or $(PRODUCTS),10000)
 	@$(MAKE) --no-print-directory reindex
 
+feed: warm ## Run a simulated daily supplier file over the catalogue, override like 'ROWS=1200000 make feed'
+	$(CONSOLE_BULK) catalogue-sync:dev:generate-feed $(if $(ROWS),--rows=$(ROWS))
+
 reindex: warm ## Rebuild the index and switch the alias
 	$(CONSOLE_BULK) catalogue-sync:index:reindex
 
@@ -88,6 +95,12 @@ reset: ## Rebuild the schema and seed both stores, override like 'PRODUCTS=10000
 	$(CONSOLE) doctrine:schema:drop --force --full-database
 	@$(MAKE) --no-print-directory migrate
 	@$(MAKE) --no-print-directory seed
+
+check-drift: ## Compare the 1 000 most recently changed products against the index
+	$(CONSOLE) catalogue-sync:sync:check-drift --recently-changed=1000
+
+check-drift-all: ## Compare every product
+	$(CONSOLE_BULK) catalogue-sync:sync:check-drift
 
 es-indices: ## List the indices and aliases in Elasticsearch
 	@$(DC) exec -T elasticsearch curl -s 'localhost:9200/_cat/indices/products*?h=index,docs.count,store.size&v'
