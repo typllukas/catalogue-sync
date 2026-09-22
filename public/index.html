@@ -44,6 +44,53 @@ h1 { margin: 0 0 2px; font-size: 19px; letter-spacing: -0.01em; }
 }
 .lede { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
 
+.flow { display: flex; align-items: stretch; flex-wrap: wrap; margin: 10px 0 2px; }
+.step {
+    flex: 1 1 0; min-width: 158px; position: relative;
+    padding: 9px 14px 9px 22px; border: 1px solid var(--line); border-right: 0; background: var(--ground);
+    transition: background 180ms, border-color 180ms;
+}
+.step:first-child { border-radius: 8px 0 0 8px; padding-left: 14px; }
+/* the batch step has the longest text, so it gets more of the width */
+.step:nth-child(3) { flex-grow: 1.5; }
+.step:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+.step::before {
+    content: ''; position: absolute; left: -9px; top: 50%; width: 16px; height: 16px; margin-top: -8px;
+    background: var(--ground); border: 1px solid var(--line); border-width: 1px 1px 0 0;
+    transform: rotate(45deg); z-index: 2; transition: background 180ms, border-color 180ms;
+}
+.step:first-child::before { display: none; }
+.step .what { font-size: 12.5px; font-weight: 600; }
+.step .detail { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.step .count { font-variant-numeric: tabular-nums; }
+.step.live, .step.live::before { background: var(--accent-soft); border-color: var(--accent-line); }
+.step.live .what { color: var(--accent); }
+.step.here, .step.here::before { background: var(--paper); }
+.step.drifted .detail { color: var(--bad); }
+
+.statusline {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+    min-height: 34px;
+    font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums;
+}
+.agreement { display: inline-flex; align-items: center; gap: 6px; }
+.agreement .icon { width: 15px; height: 15px; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.agreement .icon path { display: none; stroke: currentColor; }
+.agreement.ok { color: var(--ok-soft); }
+.agreement.ok .check { display: inline; }
+.agreement.catchingup { color: var(--accent); }
+.agreement.catchingup .clock { display: inline; }
+.agreement.drifted { color: var(--bad); }
+.agreement.drifted .cross { display: inline; }
+button.drain {
+    padding: 8px 15px; border: 1px solid var(--accent); border-radius: 8px;
+    background: var(--accent); color: #fff; font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+}
+button.drain:hover { background: #0a54e0; }
+button.drain[disabled] { opacity: 0.55; cursor: default; }
+button.drain.secondary { background: var(--paper); border-color: var(--line-strong); color: var(--ink-soft); }
+button.drain.secondary:hover { background: var(--fill); }
+
 .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
 input[type=search], input[type=number], select {
     font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 6px;
@@ -127,6 +174,35 @@ mark { background: var(--mark); padding: 0 1px; border-radius: 2px; }
             Katalog e-shopu průběžně synchronizovaný do Elasticsearch.
         </p>
 
+        <div class="statusline">
+            <button class="drain" id="feedButton" type="button">Simulovat dodavatelský soubor (20 000 řádků)</button>
+            <span class="agreement ok" id="agreement">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path class="check" d="M2.5 8.5 6.5 12.5 13.5 3.5"/>
+                    <path class="cross" d="M4 4 12 12 M12 4 4 12"/>
+                    <path class="clock" d="M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0M8 4.5V8l2.5 1.5"/>
+                </svg>
+                <span id="agreementText">index souhlasí s databází</span>
+            </span>
+            <span id="feedNote"></span>
+        </div>
+
+        <div class="flow">
+            <div class="step">
+                <div class="what">Změna v databázi</div>
+                <div class="detail">ceny a sklad z dodavatelského souboru</div>
+            </div>
+            <div class="step" id="stepQueue">
+                <div class="what">Ve frontě <span class="count" id="pendingCount">–</span></div>
+                <div class="detail">produktů čeká na zápis</div>
+            </div>
+            <div class="step here" id="stepBatch">
+                <div class="what">Zápis do indexu</div>
+                <div class="detail" id="lastDrainSub">zatím neproběhl</div>
+            </div>
+        </div>
+
+
         <div class="controls">
             <div class="searchbox">
                 <input type="search" id="text" placeholder="název produktu, SKU nebo EAN" autocomplete="off">
@@ -171,13 +247,20 @@ const AVAILABILITY_LABELS = {
     in_stock: 'skladem',
     out_of_stock: 'vyprodáno',
 };
+// the poll also runs the drain, a batch whenever the queue is not empty, as a worker would
+const STATUS_POLL_MS = 2000;
+// a written document becomes searchable on the index refresh cycle, which the reindexer sets to 1s
+const INDEX_REFRESH_MS = 1200;
 const PAGE_WINDOW = 11;
 
 const numberFormat = new Intl.NumberFormat('cs-CZ');
 const priceFormat = new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' });
+const timeFormat = new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const dateTimeFormat = new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'short', timeStyle: 'short' });
 const czechPlural = new Intl.PluralRules('cs-CZ');
 const PRODUCT_FORMS = { one: 'produkt', few: 'produkty', many: 'produktu', other: 'produktů' };
+const MISMATCH_FORMS = { one: 'neshoda', few: 'neshody', many: 'neshody', other: 'neshod' };
+const ROW_FORMS = { one: 'řádek', few: 'řádky', many: 'řádku', other: 'řádků' };
 
 const selectedBrands = new Set();
 let selectedCategory = null;
@@ -195,10 +278,19 @@ const elements = {
     facets: document.getElementById('facets'),
     results: document.getElementById('results'),
     paging: document.getElementById('paging'),
+    feedButton: document.getElementById('feedButton'),
 };
 
 function countProducts(count) {
     return numberFormat.format(count) + ' ' + PRODUCT_FORMS[czechPlural.select(count)];
+}
+
+function countMismatches(count) {
+    return numberFormat.format(count) + ' ' + MISMATCH_FORMS[czechPlural.select(count)];
+}
+
+function countRows(count) {
+    return numberFormat.format(count) + ' ' + ROW_FORMS[czechPlural.select(count)];
 }
 
 /**
@@ -525,6 +617,143 @@ function buildPageButton(label, page, disabled, current) {
     return button;
 }
 
+function describeAgreement(status, isCatchingUp) {
+    if (isCatchingUp) {
+        return 'Index se aktualizuje…';
+    }
+
+    if (status.driftedProductCount === 0) {
+        return 'Databáze souhlasí s indexem';
+    }
+
+    return countMismatches(status.driftedProductCount) + ' mezi databází a indexem';
+}
+
+async function loadStatus() {
+    const response = await fetch('/api/sync/status');
+    if (!response.ok) { return; }
+
+    const status = await response.json();
+    document.getElementById('pendingCount').textContent = numberFormat.format(status.pendingProductCount);
+    document.getElementById('stepQueue').classList.toggle('live', status.pendingProductCount > 0);
+
+    document.getElementById('lastDrainSub').textContent = status.lastDrainAt === null
+        ? 'zatím neproběhl'
+        : timeFormat.format(new Date(status.lastDrainAt))
+            + ' · zapsáno ' + numberFormat.format(status.lastDrainWrittenProductCount)
+            + ' · beze změny ' + numberFormat.format(status.lastDrainUnchangedProductCount)
+            + ' · ' + numberFormat.format(status.lastDrainElapsedMilliseconds) + ' ms';
+    if (hasLastDrainFailed) {
+        document.getElementById('lastDrainSub').textContent += ' · poslední zápis selhal';
+    }
+
+    // with a pending queue the index is behind as expected, so drift is not reported yet
+    const isCatchingUp = status.pendingProductCount > 0;
+    const agreement = document.getElementById('agreement');
+    agreement.classList.toggle('catchingup', isCatchingUp);
+    agreement.classList.toggle('ok', !isCatchingUp && status.driftedProductCount === 0);
+    agreement.classList.toggle('drifted', !isCatchingUp && status.driftedProductCount > 0);
+
+    document.getElementById('agreementText').textContent = describeAgreement(status, isCatchingUp);
+
+    if (status.pendingProductCount > 0 && !isDraining) {
+        drain();
+    }
+
+    if (status.pendingProductCount === 0 && !isDraining && runningFeed !== null) {
+        reportFinishedRun();
+    }
+}
+
+/**
+ * The endpoint only fills the queue; reportFinishedRun() reports the run once the drains have emptied it.
+ */
+async function runSupplierFeed() {
+    const note = document.getElementById('feedNote');
+    elements.feedButton.disabled = true;
+    note.textContent = 'soubor se zpracovává…';
+    runningFeed = null;
+
+    try {
+        const response = await fetch('/api/dev/supplier-feed', { method: 'POST' });
+        const feedResult = await response.json();
+
+        if (!response.ok) {
+            note.textContent = 'soubor se nepodařilo zpracovat';
+
+            return;
+        }
+
+        runningFeed = { feedResult, written: 0, unchanged: 0 };
+    } catch {
+        note.textContent = 'soubor se nepodařilo zpracovat';
+    } finally {
+        elements.feedButton.disabled = false;
+        loadStatus();
+    }
+}
+
+/**
+ * The counts after the arrow do not add up to it: a product drained while the file was still being
+ * written is queued and counted twice.
+ */
+function reportFinishedRun() {
+    const finished = runningFeed;
+    runningFeed = null;
+
+    document.getElementById('feedNote').textContent = 'Hotovo: '
+        + countRows(finished.feedResult.touchedRowCount) + ' → '
+        + countProducts(finished.feedResult.pendingProductCount) + ' ve frontě'
+        + ' · zapsáno ' + numberFormat.format(finished.written)
+        + ' · beze změny ' + numberFormat.format(finished.unchanged)
+        + ' · staženo z prodeje ' + numberFormat.format(finished.feedResult.discontinuedProductCount);
+}
+
+let isDraining = false;
+let hasLastDrainFailed = false;
+let refreshTimer = null;
+let runningFeed = null;
+
+/**
+ * A batch takes longer than the poll, so without isDraining several requests would drain the same rows.
+ */
+async function drain() {
+    isDraining = true;
+    document.getElementById('stepBatch').classList.add('live');
+
+    let hasFailed = false;
+    try {
+        const response = await fetch('/api/sync/drain', { method: 'POST' });
+        const drainResult = await response.json();
+
+        if (response.ok && runningFeed !== null) {
+            runningFeed.written += drainResult.writtenProductCount;
+            runningFeed.unchanged += drainResult.unchangedProductCount;
+        }
+
+        hasFailed = !response.ok;
+    } catch {
+        hasFailed = true;
+    } finally {
+        isDraining = false;
+        document.getElementById('stepBatch').classList.remove('live');
+    }
+
+    hasLastDrainFailed = hasFailed;
+
+    // the status poll retries; draining again at once would loop as fast as the server can fail
+    if (hasFailed) {
+        document.getElementById('lastDrainSub').textContent = 'zápis selhal';
+
+        return;
+    }
+
+    loadStatus();
+    // one refresh after the last batch of a backlog, once the index refresh cycle has passed
+    window.clearTimeout(refreshTimer);
+    refreshTimer = window.setTimeout(search, INDEX_REFRESH_MS);
+}
+
 function escapeHtml(value) {
     const holder = document.createElement('span');
     holder.textContent = value;
@@ -541,8 +770,11 @@ elements.text.addEventListener('input', searchSoon);
 elements.priceFrom.addEventListener('change', searchSoon);
 elements.priceTo.addEventListener('change', searchSoon);
 elements.sort.addEventListener('change', () => { currentPage = 1; search(); });
+elements.feedButton.addEventListener('click', runSupplierFeed);
 
 search();
+loadStatus();
+window.setInterval(loadStatus, STATUS_POLL_MS);
 </script>
 
 </body>
