@@ -63,6 +63,9 @@ jobs:
       - name: Coding standard
         run: vendor/bin/phpcs
 
+      - name: Indexed fields no query reads
+        run: php bin/console catalogue-sync:dev:check-mappings
+
       - name: Static analysis
         run: vendor/bin/phpstan analyse --no-progress
 
