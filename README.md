@@ -2,10 +2,10 @@
 
 [![check](https://github.com/typllukas/catalogue-sync/actions/workflows/check.yml/badge.svg)](https://github.com/typllukas/catalogue-sync/actions/workflows/check.yml)
 
-Sync of an e-shop catalogue with a million products into Elasticsearch, and a product search on top
-of it. Learning project for Elasticsearch and the transactional outbox, not a product. Plain Symfony
-7.4 on PHP 8.5, MariaDB is the source of truth, Elasticsearch 9.1 is the only read path for search,
-PHPStan level 10.
+Sync of an e-shop catalogue with a million products into Elasticsearch, a product search on top of
+it, and [order suggestions per store](#replenishment-order-suggestions-from-19-million-sales-rows)
+from daily sales. A reference project, not a product: plain Symfony 7.4 on PHP 8.5, MariaDB is the
+source of truth, Elasticsearch 9.1 is the only read path for search, PHPStan level 10.
 
 A product change never goes to the index directly. It is saved together with an outbox row in one
 transaction, and a drain sends the changed products to the index in batches, whole or only the
@@ -18,6 +18,9 @@ queue, batches move it to the index, and the search below reads from it.
 ![Dashboard during a supplier file: 4 336 products in the queue, the last batch wrote 143 and
 skipped 856 as unchanged, the index is catching up, product search with category and brand facets
 below](docs/screenshot.png)
+
+A second part turns 19 million daily sales rows into order suggestions per store: SQL totals them
+under a primary key chosen by measurement, and a small PHP class applies the policy.
 
 ## Why a transactional outbox
 
@@ -38,7 +41,7 @@ with all changes merged. The drain reads the current product when it sends it, s
 does not matter, and it sends with `update`, which skips a document that did not change.
 
 The transaction guarantees a change is not lost, not that it arrives in time: a change waits for the
-next drain. In the demo the open dashboard with JavaScript code is the worker: every 2 s it runs one batch through
+next drain. In the demo the open dashboard page is the worker: every 2 s it runs one batch through
 `POST /api/sync/drain` while the outbox has rows, so with no page open nothing drains. In production
 `catalogue-sync:sync:drain` would run the same batch from a scheduler. Planned schedule, no crontab is
 installed: drain while the outbox has rows, supplier file daily, rebuild after a mapping change,
@@ -80,19 +83,67 @@ facet. Here it is one request:
 - **The rest:** highlight of what matched, a price filter, sort by relevance or price, paging up to
   row 10 000
 
+## Replenishment: order suggestions from 19 million sales rows
+
+`make sales` generates four months of daily sales for 40 stores and 10 000 products, 19 M rows, a row
+only for a day with a sale. `make suggest` runs as of yesterday like a nightly job and writes
+`var/replenishment.csv` for an ordering system:
+
+```
+store,sku,average_daily_demand,safety_stock,on_hand,on_order,order_quantity
+1,BOS-0000014,2.18,11.28,24,0,18
+```
+
+The policy is the textbook (R, S) model, kept simple; the work is in running it over 19 M rows.
+
+- Days without a sale count as zero. The table has a row only for days with a sale, so a plain `AVG()`
+  would make slow sellers look faster than they are.
+- Safety stock covers the 14 days until the next order arrives (7 days lead time, weekly review) at a
+  95 % cycle service level. That is the chance of not running out in a cycle, not the share of demand
+  served, which is usually higher.
+
+SQL reduces the rows to about 400 000 store and product totals; the policy is a small PHP class,
+unit-tested without a database. The file is renamed into place, so a failed run never leaves half a
+file. A day with no sales yet or a history shorter than 28 days is refused. 5 to 6 s warm.
+
+### The key, chosen by measurement
+
+Primary key (store, product, date), no id, no foreign key. InnoDB stores rows in key order, so the key
+decides what the 28-day totals read in sequence. `make bench-key-order` times the grouping under each
+layout (MariaDB 11.4, 2 GB buffer pool):
+
+| Layout | Plan | Time |
+|---|---|---|
+| (store, product, date) | one scan, grouping streams in key order | 1.95 to 2.56 s |
+| same, filled day by day as an import would | the same scan over split pages | 4.61 to 4.84 s |
+| (date, store, product) | only the window's 4.4 M rows, then temporary table and sort | 9.88 to 9.96 s |
+| auto-increment id, (store, product, date) unique | all rows, then temporary table and sort | 12.98 to 13.33 s |
+
+- Time first, the usual advice for time series, reads a quarter of the rows and still loses: the query
+  groups per pair, so a pair's rows must sit together.
+- Nothing refers to a single sales row, so an id only adds cost. A foreign key would need a second index
+  over all rows; the join to product skips sales of deleted products instead.
+- Every run still reads the whole history, so it slows as the history grows. The next step is a table
+  of each pair's 28-day sums, updated nightly by adding the new day and dropping the oldest.
+
 ## What it is not
 
-- Not an importer. Nothing downloads or parses XML or CSV, one command writes the rows a supplier
-  file would write. It marks every product the file names, also the 85 % whose price and stock
-  did not change, and the index skips those as no-ops. A real import would compare with the stored row
-  first and mark only the changed ones
-- Not tuned for relevance. Name weighs more than description and that is all, no score explanation,
-  no suggester
+- Not a forecast. The order suggestions use a 28-day moving average, no trend, season or promotion,
+  and a sold-out day reads as zero demand
+- Not a replenishment system. The order suggestions use one lead time for all suppliers and order in
+  units rather than pack sizes. A product with no sales in 28 days gets no order even with an empty
+  shelf, where a real system starts from the store's assortment
+- Not a supplier import. The catalogue's supplier file is generated: nothing downloads or parses XML
+  or CSV, one command writes the rows such a file would write. It marks every product the file names,
+  also the 85 % whose price and stock did not change, and the index skips those as no-ops. A real
+  import would compare with the stored row first and mark only the changed ones
+- Not a tuned product search. Name weighs more than description and that is all, no score
+  explanation, no suggester
 - Not a cluster setup. One Elasticsearch node, security off, 1 GB heap. Replicas are a setting
   (`ELASTICSEARCH_REPLICAS`), nothing else about running a cluster is here
 - Not a front end. The dashboard is one static HTML file without a build step, it only makes the
   pipeline visible
-- Not a product. No login, no admin, one shop
+- Not a product. No login, no admin, a single generated catalogue
 
 ## Endpoints
 
@@ -135,9 +186,16 @@ docker compose exec --user "$(id -u):$(id -g)" -e APP_DEBUG=0 php php bin/consol
 docker compose exec --user "$(id -u):$(id -g)" -e APP_DEBUG=0 php php bin/console catalogue-sync:index:reindex
 ```
 
-### Try it
+### Try the sync
 
 Press **Simulovat dodavatelský soubor** and watch the queue fill, the batches empty it and the prices
 in the list change. With the default 10 000 products, 20 000 lines become about 6 400 queued
 products, a batch of 1 000 writes around 145 and skips around 850, and the queue is empty in about
 three seconds.
+
+### Try the order suggestions
+
+```bash
+make sales     # four months of daily sales for 40 stores and 10 000 products, replaces any earlier ones
+make suggest   # writes var/replenishment.csv and prints its first lines
+```
