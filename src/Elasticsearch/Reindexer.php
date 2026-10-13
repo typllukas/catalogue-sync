@@ -111,7 +111,7 @@ final readonly class Reindexer
     {
         $version = 0;
         foreach ($this->findVersionedIndexNames($alias) as $indexName) {
-            if (preg_match('/_v(\d+)$/', $indexName, $matches) !== 1) {
+            if (preg_match('/_v(\d+)$/D', $indexName, $matches) !== 1) {
                 continue;
             }
 

@@ -33,7 +33,7 @@ final class ProductSyncOutbox
     #[ORM\Column]
     private int $scopeMask;
 
-    #[ORM\Column(length: 16, enumType: ProductSyncOperation::class)]
+    #[ORM\Column(length: 16)]
     private ProductSyncOperation $operation;
 
     /** With DATETIME two marks inside one second are the same, and the release would drop a re-mark. */

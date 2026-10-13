@@ -44,7 +44,7 @@ final readonly class ProductSearchQueryFactory
 
     private const int MINIMUM_PREFIX_LENGTH = 2;
 
-    private const string SKU_PREFIX_PATTERN = '/^[A-Za-z]{3}-[A-Za-z0-9]*$/';
+    private const string SKU_PREFIX_PATTERN = '/^[A-Za-z]{3}-[A-Za-z0-9]*$/D';
 
     private const int SKU_PREFIX_BOOST = 20;
 
