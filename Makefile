@@ -11,7 +11,7 @@ CONSOLE = $(PHP) php bin/console
 CONSOLE_BULK = $(EXEC) -e APP_DEBUG=0 php php bin/console
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up down logs shell check schema-validate phpcs phpcs-fix check-mappings check-drift check-drift-all phpstan rector rector-fix test-db test migrate warm seed feed reindex reset es-indices
+.PHONY: help setup up down logs shell check schema-validate phpcs phpcs-fix check-mappings check-drift check-drift-all phpstan rector rector-fix test-db test migrate warm seed feed sales suggest bench-key-order reindex reset es-indices
 
 help: ## List the available targets
 	@awk -F: '/^[a-z-]+:/ { desc = ""; if (match($$0, /## /)) desc = substr($$0, RSTART + 3); printf "  \033[36m%-16s\033[0m %s\n", $$1, desc }' $(MAKEFILE_LIST)
@@ -86,6 +86,16 @@ seed: warm ## Seed the catalogue and rebuild the index, needs an empty database
 
 feed: warm ## Run a simulated daily supplier file over the catalogue, override like 'ROWS=1200000 make feed'
 	$(CONSOLE_BULK) catalogue-sync:dev:generate-feed $(if $(ROWS),--rows=$(ROWS))
+
+sales: warm ## Generate the daily sales history and store stock, override like 'STORES=40 SOLD_PRODUCTS=10000 DAYS=120 make sales'
+	$(CONSOLE_BULK) catalogue-sync:dev:generate-sales $(if $(STORES),--stores=$(STORES)) $(if $(SOLD_PRODUCTS),--products=$(SOLD_PRODUCTS)) $(if $(DAYS),--days=$(DAYS))
+
+suggest: warm ## Write the replenishment suggestions to var/replenishment.csv, as of yesterday or 'AS_OF=YYYY-MM-DD make suggest'
+	$(CONSOLE_BULK) catalogue-sync:replenishment:suggest $(if $(AS_OF),--as-of=$(AS_OF))
+	head -5 var/replenishment.csv
+
+bench-key-order: warm ## Time the 28-day sales totals under each key order, with their ANALYZE plans
+	$(CONSOLE_BULK) catalogue-sync:dev:benchmark-key-order
 
 reindex: warm ## Rebuild the index and switch the alias
 	$(CONSOLE_BULK) catalogue-sync:index:reindex
