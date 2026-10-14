@@ -23,6 +23,16 @@ class DailyStoreSalesRepository extends ServiceEntityRepository
         parent::__construct($registry, DailyStoreSales::class);
     }
 
+    public function findLastSalesDate(): ?DateTimeImmutable
+    {
+        $lastSalesDate = $this->createQueryBuilder('sales')
+            ->select('MAX(sales.salesDate)')
+            ->getQuery()
+            ->getSingleScalarResult();
+
+        return $lastSalesDate === null ? null : new DateTimeImmutable(MixedToString::transformStrict($lastSalesDate));
+    }
+
     public function hasSalesOn(DateTimeImmutable $salesDate): bool
     {
         return $this->createQueryBuilder('sales')
